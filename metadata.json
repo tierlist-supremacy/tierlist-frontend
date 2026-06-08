@@ -1,0 +1,6 @@
+{
+  "name": "Tier List Maker",
+  "description": "Crie, edite e exporte suas próprias Tier Lists de forma interativa com drag and drop, atividade em tempo real e exportação para PDF, PNG e backups JSON.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

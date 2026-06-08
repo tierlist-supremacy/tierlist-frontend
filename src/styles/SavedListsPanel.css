@@ -1,0 +1,76 @@
+.saved-lists-panel {
+  width: 320px; /* Synchronized sidebar column widths */
+  background: rgba(9, 12, 22, 0.82);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 1rem;
+  border-radius: 0.75rem;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+}
+
+.saved-lists-panel h3 {
+  color: #ffffff !important;
+  font-weight: 700;
+  margin-bottom: 0.75rem;
+}
+
+.saved-lists {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0;
+}
+
+.saved-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  transition: all 0.2s ease;
+}
+
+.saved-list-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.list-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.list-name-btn {
+  background: transparent;
+  border: none;
+  color: #ffffff !important;
+  font-weight: 700;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0;
+}
+
+.list-name-btn:hover {
+  text-decoration: underline;
+  color: #a855f7 !important;
+}
+
+.list-meta {
+  color: rgba(255, 255, 255, 0.7) !important;
+  font-size: 0.8rem;
+  margin-top: 2px;
+}
+
+.empty-message {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
