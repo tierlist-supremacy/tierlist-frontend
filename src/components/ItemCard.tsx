@@ -28,17 +28,19 @@ export const ItemCard: React.FC<ItemCardProps> = ({
     if (!file) return;
     optimizeImage(file)
       .then((optimizedUrl) => {
-        onUpdate({ image: optimizedUrl });
+        onUpdate({ imageUrl: optimizedUrl });
       })
       .catch((err) => {
         console.error("Erro ao otimizar imagem:", err);
       });
   };
 
+  const itemImage = item.imageUrl || item.image;
+
   return (
-    <div className={`item-card ${item.image ? "has-image" : ""}`}>
-      {item.image && (
-        <img src={item.image} alt={item.name} className="item-image" referrerPolicy="no-referrer" />
+    <div className={`item-card ${itemImage ? "has-image" : ""}`}>
+      {itemImage && (
+        <img src={itemImage} alt={item.name} className="item-image" referrerPolicy="no-referrer" />
       )}
 
       <div className="item-content">

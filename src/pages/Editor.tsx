@@ -1,8 +1,8 @@
 import React, { useRef, useEffect } from "react";
 import { User, TierList } from "../types";
 import { useTierList } from "../hooks/useTierList";
-import { useNavigate } from "../utils/router";
-import { storage } from "../utils/storage";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 import { exportToPNG, exportToPDF, exportToJSON, importFromJSON } from "../utils/export";
 import { TierListCanvas } from "../components/TierListCanvas";
 import { ActivityPanel } from "../components/ActivityPanel";
@@ -17,24 +17,15 @@ interface EditorProps {
 export const Editor: React.FC<EditorProps> = ({ currentList, onSetCurrentList }) => {
   const navigate = useNavigate();
   const canvasRef = useRef<HTMLDivElement>(null);
-  const user = storage.getUser();
+  const { user } = useAuth();
 
-  // Load from database if ID matches in search param & state is empty
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const id = params.get("id");
-    if (id && !currentList) {
-      const stored = storage.getTierList(id);
-      if (stored) {
-        onSetCurrentList(stored);
-      }
-    }
-  }, [currentList, onSetCurrentList]);
-
-  // Hook handles complete list manipulation triggers
   const {
     tierList,
-    setTierList, // support loading saved designs
+    setTierList,
+    isLoading,
+    syncQueue,
+    syncProcessing,
+    syncError,
     addCategory,
     removeCategory,
     updateCategory,
@@ -44,26 +35,24 @@ export const Editor: React.FC<EditorProps> = ({ currentList, onSetCurrentList })
     updateItem,
     reorderCategories,
     reorderItems,
+    createNewTierList,
   } = useTierList(
     currentList || {
       id: "fallback",
       name: "Nova Lista",
       userName: user?.name || "Visitante",
       userId: user?.id || "unknown",
+      themeImage: null,
+      isPublic: true,
+      favorite: false,
       categories: [],
       items: [],
       activities: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    },
+    user
   );
-
-  // Auto-save changes locally on updates
-  useEffect(() => {
-    if (tierList.id !== "fallback") {
-      storage.saveTierList(tierList);
-    }
-  }, [tierList]);
 
   const handleExportPNG = async () => {
     if (canvasRef.current) {
@@ -94,11 +83,9 @@ export const Editor: React.FC<EditorProps> = ({ currentList, onSetCurrentList })
     if (file) {
       try {
         const data = (await importFromJSON(file)) as TierList;
-        // Verify minimal integrity
         if (data.name && Array.isArray(data.categories) && Array.isArray(data.items)) {
           setTierList(data);
           onSetCurrentList(data);
-          storage.saveTierList(data);
           alert("Backup importado com sucesso!");
         } else {
           alert("Arquivo JSON inválido!");
@@ -117,12 +104,7 @@ export const Editor: React.FC<EditorProps> = ({ currentList, onSetCurrentList })
   };
 
   const handleSelectList = (id: string) => {
-    const selected = storage.getTierList(id);
-    if (selected) {
-      onSetCurrentList(selected);
-      setTierList(selected);
-      navigate(`/editor?id=${selected.id}`);
-    }
+    navigate(`/editor?id=${id}`);
   };
 
   if (tierList.id === "fallback") {

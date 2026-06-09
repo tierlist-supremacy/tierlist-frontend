@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from '../utils/router';
-import { storage, generateId, formatDate } from '../utils/storage';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import { tierListApi, uploadApi, CreateTierListInput } from '../api/endpoints';
 import { TierList, Category, User } from '../types';
+import { generateId, formatDate } from '../utils/storage';
 import {
   Folder,
   Star,
@@ -38,10 +40,12 @@ interface PresetTemplate {
 
 export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
   const navigate = useNavigate();
-  
-  // Lists from storage
+  const { user, loading: authLoading, updateProfile } = useAuth();
+
+  // Lists from API
   const [tierLists, setTierLists] = useState<TierList[]>([]);
-  const [activeUser, setActiveUser] = useState<User | null>(null);
+  const [activeUser, setActiveUser] = useState<User | null>(user);
+  const [loading, setLoading] = useState(true);
 
   // Filter/Sort State
   const [searchQuery, setSearchQuery] = useState('');
@@ -53,21 +57,47 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
   // New Board Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [newListName, setNewListName] = useState('');
-  const [newUserName, setNewUserName] = useState('');
+  const [newUserName, setNewUserName] = useState(activeUser?.name || '');
   const [newBgImage, setNewBgImage] = useState<string | undefined>(undefined);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<PresetTemplate | null>(null);
 
-  // Load storage details on mount
-  useEffect(() => {
-    const lists = storage.getAllTierLists();
-    setTierLists(lists);
-    const user = storage.getUser();
-    setActiveUser(user);
-    if (user) {
-      setNewUserName(user.name);
+  // Load tier lists from API
+  const loadTierLists = useCallback(async () => {
+    if (!activeUser) {
+      setTierLists([]);
+      setLoading(false);
+      return;
     }
-  }, []);
+    setLoading(true);
+    try {
+      const params: Record<string, string | number | boolean> = {
+        page: 1,
+        pageSize: 50,
+        author: filterAuthor,
+        sortBy,
+      };
+      if (searchQuery) params.search = searchQuery;
+      if (sidebarTab === 'favorites') params.favorite = true;
+
+      const response = await tierListApi.list(params);
+      setTierLists(response.data.data);
+    } catch (error) {
+      console.error('Failed to load tier lists:', error);
+      setTierLists([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [activeUser, filterAuthor, sortBy, searchQuery, sidebarTab]);
+
+  useEffect(() => {
+    loadTierLists();
+  }, [loadTierLists]);
+
+  useEffect(() => {
+    setActiveUser(user);
+    if (user) setNewUserName(user.name);
+  }, [user]);
 
   // Templates in Miro carousel format
   const presetTemplates: PresetTemplate[] = [
@@ -148,28 +178,32 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
     },
   ];
 
-  // Favorite toggle updates storage and triggers state updates reactively
-  const handleToggleFavorite = (e: React.MouseEvent, listId: string) => {
+  // Favorite toggle via API
+  const handleToggleFavorite = async (e: React.MouseEvent, listId: string) => {
     e.stopPropagation();
-    const updated = tierLists.map((list) => {
-      if (list.id === listId) {
-        const nextFav = !list.favorite;
-        const newList = { ...list, favorite: nextFav };
-        storage.saveTierList(newList);
-        return newList;
-      }
-      return list;
-    });
-    setTierLists(updated);
+    const list = tierLists.find(l => l.id === listId);
+    if (!list) return;
+
+    try {
+      await tierListApi.update(listId, { favorite: !list.favorite });
+      setTierLists(prev => prev.map(l => l.id === listId ? { ...l, favorite: !l.favorite } : l));
+    } catch (error) {
+      console.error('Failed to toggle favorite:', error);
+      alert('Erro ao atualizar favorito');
+    }
   };
 
-  // Snappy local Delete without reloading
-  const handleDeleteList = (e: React.MouseEvent, listId: string) => {
+  // Delete via API
+  const handleDeleteList = async (e: React.MouseEvent, listId: string) => {
     e.stopPropagation();
-    if (window.confirm('Deseja excluir esta Tier List permanentemente?')) {
-      storage.deleteTierList(listId);
-      const filtered = tierLists.filter((l) => l.id !== listId);
-      setTierLists(filtered);
+    if (!window.confirm('Deseja excluir esta Tier List permanentemente?')) return;
+
+    try {
+      await tierListApi.delete(listId);
+      setTierLists(prev => prev.filter(l => l.id !== listId));
+    } catch (error) {
+      console.error('Failed to delete tier list:', error);
+      alert('Erro ao excluir tier list');
     }
   };
 
@@ -188,7 +222,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
   };
 
   // Execute creation
-  const handleCreateBoard = (e: React.FormEvent) => {
+  const handleCreateBoard = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!newListName.trim() || !newUserName.trim()) {
@@ -196,43 +230,31 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
       return;
     }
 
-    const userId = activeUser?.id || generateId();
-    storage.setUser({ id: userId, name: newUserName });
+    if (!activeUser) {
+      alert('Você precisa estar logado para criar uma tier list.');
+      return;
+    }
 
-    // Build categories based on active template
     const activePreset = selectedTemplate || presetTemplates[0];
-    const newCategories: Category[] = activePreset.categories.map((cat, index) => ({
-      id: generateId(),
-      name: cat.name,
-      color: cat.color,
-      order: index,
-    }));
-
-    const newTierList: TierList = {
-      id: generateId(),
+    const createData: CreateTierListInput = {
       name: newListName,
-      userName: newUserName,
-      userId,
       themeImage: newBgImage,
-      categories: newCategories,
-      items: [],
-      activities: [
-        {
-          id: generateId(),
-          userId,
-          userName: newUserName,
-          action: `Criou a Tier List "${newListName}" baseada no modelo "${activePreset.name}"`,
-          timestamp: Date.now(),
-        },
-      ],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      favorite: false,
+      categories: activePreset.categories.map((cat) => ({ name: cat.name, color: cat.color })),
     };
 
-    storage.saveTierList(newTierList);
-    onStartEditor(newTierList);
-    navigate(`/editor?id=${newTierList.id}`);
+    try {
+      const response = await tierListApi.create(createData);
+      const newTierList = response.data;
+      setIsModalOpen(false);
+      setNewListName('');
+      setNewBgImage(undefined);
+      setSelectedTemplate(null);
+      onStartEditor(newTierList);
+      navigate(`/editor?id=${newTierList.id}`);
+    } catch (error) {
+      console.error('Failed to create tier list:', error);
+      alert('Erro ao criar tier list');
+    }
   };
 
   // File Upload Handlers for Background Image
@@ -270,13 +292,18 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
   };
 
   // Profile changing support
-  const handleQuickNameChange = () => {
-    const name = window.prompt('Digite seu novo nickname:', activeUser?.name || '');
+  const handleQuickNameChange = async () => {
+    if (!activeUser) return;
+    const name = window.prompt('Digite seu novo nickname:', activeUser.name || '');
     if (name && name.trim()) {
-      const updatedUser = { id: activeUser?.id || generateId(), name: name.trim() };
-      storage.setUser(updatedUser);
-      setActiveUser(updatedUser);
-      setNewUserName(updatedUser.name);
+      try {
+        await updateProfile(name.trim());
+        setActiveUser(prev => prev ? { ...prev, name: name.trim() } : null);
+        setNewUserName(name.trim());
+      } catch (error) {
+        console.error('Failed to update profile:', error);
+        alert('Erro ao atualizar nome');
+      }
     }
   };
 
@@ -293,7 +320,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
 
       // 2. Sidebar categories
       if (sidebarTab === 'favorites' && !list.favorite) return false;
-      
+
       // 3. Middle filters
       if (filterAuthor === 'me' && activeUser && list.userId !== activeUser.id) return false;
 
@@ -301,20 +328,21 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
     })
     .sort((a, b) => {
       // 4. Sort calculations
+      const getTime = (dateStr: string) => new Date(dateStr).getTime();
       if (sidebarTab === 'recent') {
-        return b.updatedAt - a.updatedAt; // Force updated order for recent
+        return getTime(b.updatedAt) - getTime(a.updatedAt); // Force updated order for recent
       }
 
       switch (sortBy) {
         case 'created':
-          return b.createdAt - a.createdAt;
+          return getTime(b.createdAt) - getTime(a.createdAt);
         case 'alphabetical':
           return a.name.localeCompare(b.name);
         case 'items':
           return b.items.length - a.items.length;
         case 'updated':
         default:
-          return b.updatedAt - a.updatedAt;
+          return getTime(b.updatedAt) - getTime(a.updatedAt);
       }
     });
 
@@ -350,7 +378,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
             <Folder size={18} />
             <span>Todos os Boards</span>
           </button>
-          
+
           <button
             onClick={() => { setSidebarTab('recent'); }}
             className={`nav-item ${sidebarTab === 'recent' ? 'active' : ''}`}
@@ -358,7 +386,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
             <Clock size={18} />
             <span>Recentes</span>
           </button>
-          
+
           <button
             onClick={() => { setSidebarTab('favorites'); }}
             className={`nav-item ${sidebarTab === 'favorites' ? 'active' : ''}`}
@@ -467,7 +495,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
                   className="filter-select"
                 >
                   <option value="all">Qualquer titular</option>
-                  {activeUser && <option value="me">De minha autoria</option>}
+ <option value="me">De minha autoria</option>
                 </select>
               </div>
 
@@ -514,7 +542,12 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
           </div>
 
           {/* LIST WRAPPER */}
-          {filteredBoards.length === 0 ? (
+          {loading ? (
+            <div className="empty-boards-state">
+              <div className="empty-illustration">⏳</div>
+              <h3>Carregando...</h3>
+            </div>
+          ) : filteredBoards.length === 0 ? (
             <div className="empty-boards-state">
               <div className="empty-illustration">🗂️</div>
               <h3>Nenhum board encontrado</h3>
@@ -603,172 +636,173 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
                 ))}
               </div>
             </div>
-          ) : (
-            /* GRID VIEW */
-            <div className="boards-grid-container">
-              {filteredBoards.map((list) => (
-                <div
-                  key={list.id}
-                  onClick={() => {
-                    onStartEditor(list);
-                    navigate(`/editor?id=${list.id}`);
-                  }}
-                  className="board-grid-card"
-                >
-                  <div className="grid-card-preview">
-                    {list.themeImage ? (
-                      <img src={list.themeImage} alt="Theme font" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="grid-default-background">
-                        <div className="grid-gradient-blob" />
-                        <SlidersHorizontal size={36} className="decor-icon" />
+          )) : (
+              /* GRID VIEW */
+              <div className="boards-grid-container">
+                {filteredBoards.map((list) => (
+                  <div
+                    key={list.id}
+                    onClick={() => {
+                      onStartEditor(list);
+                      navigate(`/editor?id=${list.id}`);
+                    }}
+                    className="board-grid-card"
+                  >
+                    <div className="grid-card-preview">
+                      {list.themeImage ? (
+                        <img src={list.themeImage} alt="Theme font" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="grid-default-background">
+                          <div className="grid-gradient-blob" />
+                          <SlidersHorizontal size={36} className="decor-icon" />
+                        </div>
+                      )}
+                      <button
+                        onClick={(e) => handleToggleFavorite(e, list.id)}
+                        className={`grid-star-bubble ${list.favorite ? 'starred' : ''}`}
+                      >
+                        <Star size={16} fill={list.favorite ? '#f59e0b' : 'none'} />
+                      </button>
+                    </div>
+                    <div className="grid-card-body">
+                      <h3 className="grid-title" title={list.name}>{list.name}</h3>
+                      <div className="grid-meta">
+                        <span>Por {list.userName}</span>
+                        <span>•</span>
+                        <span>{list.items.length} itens</span>
                       </div>
-                    )}
-                    <button
-                      onClick={(e) => handleToggleFavorite(e, list.id)}
-                      className={`grid-star-bubble ${list.favorite ? 'starred' : ''}`}
-                    >
-                      <Star size={16} fill={list.favorite ? '#f59e0b' : 'none'} />
-                    </button>
-                  </div>
-                  <div className="grid-card-body">
-                    <h3 className="grid-title" title={list.name}>{list.name}</h3>
-                    <div className="grid-meta">
-                      <span>Por {list.userName}</span>
-                      <span>•</span>
-                      <span>{list.items.length} itens</span>
-                    </div>
-                    <div className="grid-footer">
-                      <span className="grid-time">{formatDate(list.updatedAt)}</span>
-                      <button
-                        onClick={(e) => handleDeleteList(e, list.id)}
-                        className="grid-delete-btn"
-                        title="Remover"
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                      <div className="grid-footer">
+                        <span className="grid-time">{formatDate(list.updatedAt)}</span>
+                        <button
+                          onClick={(e) => handleDeleteList(e, list.id)}
+                          className="grid-delete-btn"
+                          title="Remover"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </div>
                   </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </main>
+
+        {/* 5. GORGEOUS CREATION FLOW MODAL */}
+        {isModalOpen && (
+          <div className="miro-modal-overlay">
+            <div className="miro-modal-card">
+              <div className="modal-card-header">
+                <div className="header-info">
+                  <span className="modal-eyebrow">
+                    Modelo: {selectedTemplate?.name || 'Tradicional'}
+                  </span>
+                  <h3>Nova Tier List</h3>
                 </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </main>
-
-      {/* 5. GORGEOUS CREATION FLOW MODAL */}
-      {isModalOpen && (
-        <div className="miro-modal-overlay">
-          <div className="miro-modal-card">
-            <div className="modal-card-header">
-              <div className="header-info">
-                <span className="modal-eyebrow">
-                  Modelo: {selectedTemplate?.name || 'Tradicional'}
-                </span>
-                <h3>Nova Tier List</h3>
-              </div>
-              <button onClick={() => setIsModalOpen(false)} className="close-modal-btn">
-                <X size={20} />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateBoard} className="modal-creation-form">
-              <div className="form-group">
-                <label className="form-label font-medium text-slate-300">
-                  Título do Board <span className="text-pink-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={newListName}
-                  onChange={(e) => setNewListName(e.target.value)}
-                  placeholder="Ex: Melhores álbuns da história, ranks..."
-                  className="form-input"
-                  required
-                  autoFocus
-                />
+                <button onClick={() => setIsModalOpen(false)} className="close-modal-btn">
+                  <X size={20} />
+                </button>
               </div>
 
-              <div className="form-group">
-                <label className="form-label font-medium text-slate-300">
-                  Seu Nickname <span className="text-pink-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={newUserName}
-                  onChange={(e) => setNewUserName(e.target.value)}
-                  placeholder="Seu nome de usuário..."
-                  className="form-input"
-                  required
-                />
-              </div>
-
-              <div className="form-group">
-                <label className="form-label font-medium text-slate-300">
-                  Imagem de fundo / Capa (Opcional)
-                </label>
-                
-                <div
-                  className={`drop-zone ${isDragging ? 'dragging' : ''} ${
-                    newBgImage ? 'has-image' : ''
-                  }`}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => document.getElementById('modal-theme-file-input')?.click()}
-                  style={{ minHeight: '140px', padding: '1rem' }}
-                >
-                  {newBgImage ? (
-                    <div className="theme-preview">
-                      <img src={newBgImage} alt="Theme preview" referrerPolicy="no-referrer" />
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setNewBgImage(undefined);
-                        }}
-                        className="btn-remove"
-                        title="Remover Imagem"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="flex-col-center">
-                      <ImageIcon className="drop-icon-lucide" size={24} />
-                      <p className="drop-zone-text text-xs text-slate-400">
-                        Clique ou arraste uma capa aqui
-                      </p>
-                    </div>
-                  )}
+              <form onSubmit={handleCreateBoard} className="modal-creation-form">
+                <div className="form-group">
+                  <label className="form-label font-medium text-slate-300">
+                    Título do Board <span className="text-pink-500">*</span>
+                  </label>
                   <input
-                    id="modal-theme-file-input"
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileChange}
-                    className="file-input-hidden"
+                    type="text"
+                    value={newListName}
+                    onChange={(e) => setNewListName(e.target.value)}
+                    placeholder="Ex: Melhores álbuns da história, ranks..."
+                    className="form-input"
+                    required
+                    autoFocus
                   />
                 </div>
-              </div>
 
-              <div className="modal-actions-buttons">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="btn btn-secondary py-3 flex-grow"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary py-3 flex-grow"
-                >
-                  Começar Board 🚀
-                </button>
-              </div>
-            </form>
+                <div className="form-group">
+                  <label className="form-label font-medium text-slate-300">
+                    Seu Nickname <span className="text-pink-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newUserName}
+                    onChange={(e) => setNewUserName(e.target.value)}
+                    placeholder="Seu nome de usuário..."
+                    className="form-input"
+                    required
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label font-medium text-slate-300">
+                    Imagem de fundo / Capa (Opcional)
+                  </label>
+                  
+                  <div
+                    className={`drop-zone ${isDragging ? 'dragging' : ''} ${
+                      newBgImage ? 'has-image' : ''
+                    }`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                    onClick={() => document.getElementById('modal-theme-file-input')?.click()}
+                    style={{ minHeight: '140px', padding: '1rem' }}
+                  >
+                    {newBgImage ? (
+                      <div className="theme-preview">
+                        <img src={newBgImage} alt="Theme preview" referrerPolicy="no-referrer" />
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setNewBgImage(undefined);
+                          }}
+                          className="btn-remove"
+                          title="Remover Imagem"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex-col-center">
+                        <ImageIcon className="drop-icon-lucide" size={24} />
+                        <p className="drop-zone-text text-xs text-slate-400">
+                          Clique ou arraste uma capa aqui
+                        </p>
+                      </div>
+                    )}
+                    <input
+                      id="modal-theme-file-input"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileChange}
+                      className="file-input-hidden"
+                    />
+                  </div>
+                </div>
+
+                <div className="modal-actions-buttons">
+                  <button
+                    type="button"
+                    onClick={() => setIsModalOpen(false)}
+                    className="btn btn-secondary py-3 flex-grow"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="btn btn-primary py-3 flex-grow"
+                  >
+                    Começar Board 🚀
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
-    </div>
-  );
+        )}
+      </div>
+    );
+  };
 };

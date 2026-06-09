@@ -1,5 +1,7 @@
-import React from 'react';
-import { storage } from '../utils/storage';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { tierListApi } from '../api/endpoints';
+import { TierList } from '../types';
 import '../styles/SavedListsPanel.css';
 
 interface SavedListsPanelProps {
@@ -7,14 +9,54 @@ interface SavedListsPanelProps {
 }
 
 export const SavedListsPanel: React.FC<SavedListsPanelProps> = ({ onSelect }) => {
-  const savedLists = storage.getAllTierLists();
+  const { user } = useAuth();
+  const [savedLists, setSavedLists] = useState<TierList[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const handleDelete = (id: string) => {
+  useEffect(() => {
+    const loadLists = async () => {
+      if (!user) {
+        setSavedLists([]);
+        setLoading(false);
+        return;
+      }
+      try {
+        const response = await tierListApi.list({ author: 'me', pageSize: 50 });
+        setSavedLists(response.data.data);
+      } catch (error) {
+        console.error('Failed to load saved lists:', error);
+        setSavedLists([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadLists();
+  }, [user]);
+
+  const handleDelete = async (id: string) => {
     if (confirm('Tem certeza que deseja deletar esta tier list?')) {
-      storage.deleteTierList(id);
-      window.location.reload();
+      try {
+        await tierListApi.delete(id);
+        setSavedLists(prev => prev.filter(list => list.id !== id));
+      } catch (error) {
+        console.error('Failed to delete tier list:', error);
+        alert('Erro ao deletar tier list');
+      }
     }
   };
+
+  if (loading) {
+    return (
+      <div className="saved-lists-panel">
+        <div className="saved-lists-header">
+          <h3>📂 Minhas Tier Lists</h3>
+        </div>
+        <div className="saved-lists-container">
+          <p className="empty-message">Carregando...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="saved-lists-panel">

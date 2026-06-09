@@ -1,29 +1,65 @@
-import { useState, useCallback } from "react";
-import { TierList, Category, TierItem, ActivityLog } from "../types";
+import { useState, useCallback, useEffect } from "react";
+import { TierList, Category, TierItem, ActivityLog, User } from "../types";
 import { generateId, formatDate } from "../utils/storage";
+import { useTierListSync, MutationType } from "./useTierListSync";
 
-export const useTierList = (initialTierList: TierList) => {
+const POOL_ID = "__POOL__";
+
+export const useTierList = (
+  initialTierList: TierList,
+  currentUser: User | null,
+) => {
   const [tierList, setTierList] = useState<TierList>(initialTierList);
+  const [isLoading, setIsLoading] = useState(false);
 
+  const {
+    queue,
+    processing,
+    syncError,
+    addToQueue,
+    loadTierList,
+    createTierList: createTierListAPI,
+  } = useTierListSync();
+
+  // Carrega do backend se tiver ID válido (não fallback)
+  useEffect(() => {
+    if (initialTierList.id !== "fallback" && initialTierList.id) {
+      const load = async () => {
+        setIsLoading(true);
+        const loaded = await loadTierList(initialTierList.id);
+        if (loaded) {
+          setTierList(loaded);
+        }
+        setIsLoading(false);
+      };
+      load();
+    }
+  }, [initialTierList.id, loadTierList]);
+
+  // Helper: adiciona activity local + queue para sync
   const addActivity = useCallback(
     (action: string, userName: string, userId: string) => {
+      const now = new Date().toISOString();
+      const activity: ActivityLog = {
+        id: generateId(),
+        userId,
+        userName,
+        action,
+        timestamp: now,
+      };
+
       setTierList((prev) => ({
         ...prev,
-        activities: [
-          ...prev.activities,
-          {
-            id: generateId(),
-            userId,
-            userName,
-            action,
-            timestamp: Date.now(),
-          },
-        ],
-        updatedAt: Date.now(),
+        activities: [activity, ...prev.activities].slice(0, 100),
+        updatedAt: now,
       }));
+
+      // Queue para sync (activities são salvas junto com a mutação principal no backend)
     },
     [],
   );
+
+  // --- CATEGORIES ---
 
   const addCategory = useCallback(
     (name: string, color: string, userName: string, userId: string) => {
@@ -34,30 +70,47 @@ export const useTierList = (initialTierList: TierList) => {
         order: tierList.categories.length,
       };
 
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         categories: [...prev.categories, newCategory],
+        updatedAt: now,
       }));
 
       addActivity(`adicionou categoria "${name}"`, userName, userId);
+
+      addToQueue({
+        type: "CREATE_CATEGORY" as MutationType,
+        payload: { name, color },
+        tierListId: tierList.id,
+      });
     },
-    [tierList.categories.length, addActivity],
+    [tierList.categories.length, tierList.id, addActivity, addToQueue],
   );
 
   const removeCategory = useCallback(
     (categoryId: string, userName: string, userId: string) => {
+      const category = tierList.categories.find((c) => c.id === categoryId);
+
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         categories: prev.categories.filter((c) => c.id !== categoryId),
         items: prev.items.filter((item) => item.categoryId !== categoryId),
+        updatedAt: now,
       }));
 
-      const category = tierList.categories.find((c) => c.id === categoryId);
       if (category) {
         addActivity(`removeu categoria "${category.name}"`, userName, userId);
       }
+
+      addToQueue({
+        type: "DELETE_CATEGORY" as MutationType,
+        payload: categoryId,
+        tierListId: tierList.id,
+      });
     },
-    [tierList.categories, addActivity],
+    [tierList.categories, tierList.id, addActivity, addToQueue],
   );
 
   const updateCategory = useCallback(
@@ -67,14 +120,17 @@ export const useTierList = (initialTierList: TierList) => {
       userName: string,
       userId: string,
     ) => {
+      const oldCategory = tierList.categories.find((c) => c.id === categoryId);
+
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         categories: prev.categories.map((c) =>
           c.id === categoryId ? { ...c, ...updates } : c,
         ),
+        updatedAt: now,
       }));
 
-      const oldCategory = tierList.categories.find((c) => c.id === categoryId);
       if (oldCategory && updates.name && updates.name !== oldCategory.name) {
         addActivity(
           `renomeou categoria de "${oldCategory.name}" para "${updates.name}"`,
@@ -82,9 +138,17 @@ export const useTierList = (initialTierList: TierList) => {
           userId,
         );
       }
+
+      addToQueue({
+        type: "UPDATE_CATEGORY" as MutationType,
+        payload: { id: categoryId, data: updates },
+        tierListId: tierList.id,
+      });
     },
-    [tierList.categories, addActivity],
+    [tierList.categories, tierList.id, addActivity, addToQueue],
   );
+
+  // --- ITEMS ---
 
   const addItem = useCallback(
     (
@@ -98,34 +162,51 @@ export const useTierList = (initialTierList: TierList) => {
         id: generateId(),
         name,
         categoryId,
-        image,
+        imageUrl: image,
       };
 
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         items: [...prev.items, newItem],
+        updatedAt: now,
       }));
 
       if (userName && userId) {
         addActivity(`adicionou item "${name}"`, userName, userId);
       }
+
+      addToQueue({
+        type: "CREATE_ITEM" as MutationType,
+        payload: { name, categoryId, imageUrl: image },
+        tierListId: tierList.id,
+      });
     },
-    [addActivity],
+    [tierList.id, addActivity, addToQueue],
   );
 
   const removeItem = useCallback(
     (itemId: string, userName: string, userId: string) => {
       const item = tierList.items.find((i) => i.id === itemId);
+
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         items: prev.items.filter((i) => i.id !== itemId),
+        updatedAt: now,
       }));
 
       if (item) {
         addActivity(`removeu item "${item.name}"`, userName, userId);
       }
+
+      addToQueue({
+        type: "DELETE_ITEM" as MutationType,
+        payload: itemId,
+        tierListId: tierList.id,
+      });
     },
-    [tierList.items, addActivity],
+    [tierList.items, tierList.id, addActivity, addToQueue],
   );
 
   const moveItem = useCallback(
@@ -141,9 +222,7 @@ export const useTierList = (initialTierList: TierList) => {
           (a, b) => a.order - b.order,
         );
         const itemsByCategory = new Map<string, TierItem[]>();
-        const POOL_ID = "__POOL__";
 
-        // gather items including pool
         itemsByCategory.set(
           POOL_ID,
           prev.items.filter((i) => i.categoryId === POOL_ID),
@@ -155,7 +234,6 @@ export const useTierList = (initialTierList: TierList) => {
           ),
         );
 
-        // find and remove item from its current list
         let movedItem: TierItem | null = null;
         for (const [catId, list] of itemsByCategory.entries()) {
           const idx = list.findIndex((it) => it.id === itemId);
@@ -167,7 +245,6 @@ export const useTierList = (initialTierList: TierList) => {
 
         if (!movedItem) return prev;
 
-        // set new category id and insert at destinationIndex
         movedItem.categoryId = newCategoryId;
         const destList = itemsByCategory.get(newCategoryId) || [];
         const insertIndex = Math.max(
@@ -182,10 +259,11 @@ export const useTierList = (initialTierList: TierList) => {
           ...categoriesSorted.flatMap((c) => itemsByCategory.get(c.id) || []),
         ];
 
+        const now = new Date().toISOString();
         return {
           ...prev,
           items: newItems,
-          updatedAt: Date.now(),
+          updatedAt: now,
         };
       });
 
@@ -199,15 +277,26 @@ export const useTierList = (initialTierList: TierList) => {
           userName,
           userId,
         );
-      } else if (item && newCategoryId === "__POOL__") {
+      } else if (item && newCategoryId === POOL_ID) {
         addActivity(
           `moveu "${item.name}" para o Banco de Itens`,
           userName,
           userId,
         );
       }
+
+      addToQueue({
+        type: "MOVE_ITEM" as MutationType,
+        payload: {
+          itemId,
+          sourceCategoryId: item?.categoryId || POOL_ID,
+          destinationCategoryId: newCategoryId,
+          destinationIndex,
+        },
+        tierListId: tierList.id,
+      });
     },
-    [tierList.items, tierList.categories, addActivity],
+    [tierList.items, tierList.categories, tierList.id, addActivity, addToQueue],
   );
 
   const updateItem = useCallback(
@@ -217,14 +306,17 @@ export const useTierList = (initialTierList: TierList) => {
       userName: string,
       userId: string,
     ) => {
+      const oldItem = tierList.items.find((i) => i.id === itemId);
+
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         items: prev.items.map((i) =>
           i.id === itemId ? { ...i, ...updates } : i,
         ),
+        updatedAt: now,
       }));
 
-      const oldItem = tierList.items.find((i) => i.id === itemId);
       if (oldItem && updates.name && updates.name !== oldItem.name) {
         addActivity(
           `renomeou item de "${oldItem.name}" para "${updates.name}"`,
@@ -232,11 +324,15 @@ export const useTierList = (initialTierList: TierList) => {
           userId,
         );
       }
-    },
-    [tierList.items, addActivity],
-  );
 
-  const POOL_ID = "__POOL__";
+      addToQueue({
+        type: "UPDATE_ITEM" as MutationType,
+        payload: { id: itemId, data: updates },
+        tierListId: tierList.id,
+      });
+    },
+    [tierList.items, tierList.id, addActivity, addToQueue],
+  );
 
   const reorderItems = useCallback(
     (
@@ -252,7 +348,6 @@ export const useTierList = (initialTierList: TierList) => {
         );
         const itemsByCategory = new Map<string, TierItem[]>();
 
-        // include pool bucket
         itemsByCategory.set(
           POOL_ID,
           prev.items.filter((i) => i.categoryId === POOL_ID),
@@ -281,7 +376,7 @@ export const useTierList = (initialTierList: TierList) => {
 
         itemsByCategory.set(categoryId, newList);
 
-        // flatten: pool first, then categoriesSorted
+        const now = new Date().toISOString();
         const newItems = [
           ...(itemsByCategory.get(POOL_ID) || []),
           ...categoriesSorted.flatMap((c) => itemsByCategory.get(c.id) || []),
@@ -290,7 +385,7 @@ export const useTierList = (initialTierList: TierList) => {
         return {
           ...prev,
           items: newItems,
-          updatedAt: Date.now(),
+          updatedAt: now,
         };
       });
 
@@ -311,18 +406,30 @@ export const useTierList = (initialTierList: TierList) => {
           userId,
         );
       }
+
+      addToQueue({
+        type: "REORDER_ITEMS" as MutationType,
+        payload: {
+          itemId: item?.id,
+          sourceCategoryId: categoryId,
+          destinationCategoryId: categoryId,
+          destinationIndex,
+        },
+        tierListId: tierList.id,
+      });
     },
-    [tierList.categories, tierList.items, addActivity],
+    [tierList.categories, tierList.items, tierList.id, addActivity, addToQueue],
   );
 
   const reorderCategories = useCallback(
     (categoryIds: string[], userName?: string, userId?: string) => {
+      const now = new Date().toISOString();
       setTierList((prev) => ({
         ...prev,
         categories: prev.categories
           .map((c) => ({ ...c, order: categoryIds.indexOf(c.id) }))
           .sort((a, b) => a.order - b.order),
-        updatedAt: Date.now(),
+        updatedAt: now,
       }));
 
       if (userName && userId) {
@@ -331,13 +438,60 @@ export const useTierList = (initialTierList: TierList) => {
           .join(", ");
         addActivity(`reordenou categorias: ${names}`, userName, userId);
       }
+
+      addToQueue({
+        type: "REORDER_CATEGORIES" as MutationType,
+        payload: categoryIds,
+        tierListId: tierList.id,
+      });
     },
-    [tierList.categories, addActivity],
+    [tierList.categories, tierList.id, addActivity, addToQueue],
+  );
+
+  // --- TIERLIST LEVEL ---
+
+  const updateTierList = useCallback(
+    (updates: Partial<TierList>) => {
+      const now = new Date().toISOString();
+      setTierList((prev) => ({
+        ...prev,
+        ...updates,
+        updatedAt: now,
+      }));
+
+      if (
+        updates.name ||
+        updates.themeImage !== undefined ||
+        updates.favorite !== undefined
+      ) {
+        addToQueue({
+          type: "UPDATE_TIERLIST" as MutationType,
+          payload: { id: tierList.id, data: updates },
+          tierListId: tierList.id,
+        });
+      }
+    },
+    [tierList.id, addToQueue],
+  );
+
+  const createNewTierList = useCallback(
+    async (data: {
+      name: string;
+      themeImage?: string;
+      categories: { name: string; color: string }[];
+    }): Promise<TierList> => {
+      return createTierListAPI(data);
+    },
+    [createTierListAPI],
   );
 
   return {
     tierList,
     setTierList,
+    isLoading,
+    syncQueue: queue,
+    syncProcessing: processing,
+    syncError,
     addActivity,
     addCategory,
     removeCategory,
@@ -348,5 +502,7 @@ export const useTierList = (initialTierList: TierList) => {
     updateItem,
     reorderCategories,
     reorderItems,
+    updateTierList,
+    createNewTierList,
   };
 };
