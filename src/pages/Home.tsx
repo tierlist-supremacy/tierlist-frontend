@@ -805,4 +805,3 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
       </div>
     );
   };
-};
