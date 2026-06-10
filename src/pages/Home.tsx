@@ -636,7 +636,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
                 ))}
               </div>
             </div>
-          )) : (
+          ) : (
               /* GRID VIEW */
               <div className="boards-grid-container">
                 {filteredBoards.map((list) => (
@@ -739,7 +739,7 @@ export const Home: React.FC<HomeProps> = ({ onStartEditor }) => {
                   <label className="form-label font-medium text-slate-300">
                     Imagem de fundo / Capa (Opcional)
                   </label>
-                  
+
                   <div
                     className={`drop-zone ${isDragging ? 'dragging' : ''} ${
                       newBgImage ? 'has-image' : ''
